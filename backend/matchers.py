@@ -2,10 +2,8 @@ import re
 from knowledge_base import KNOWLEDGE_BASE
 
 
-# ---------------------------------------------------------
-# Text preprocessing
-# ---------------------------------------------------------
 
+# Text preprocessing
 def preprocess_text(text: str) -> str:
     """
     Normalize user input before matching.
@@ -22,9 +20,9 @@ def preprocess_text(text: str) -> str:
     return text
 
 
-# ---------------------------------------------------------
+
 # Keyword matching
-# ---------------------------------------------------------
+
 
 def keyword_matches(question: str, keywords: list[str]) -> list[str]:
     """
@@ -49,10 +47,8 @@ def keyword_matches(question: str, keywords: list[str]) -> list[str]:
     return matched
 
 
-# ---------------------------------------------------------
-# Calculate keyword score
-# ---------------------------------------------------------
 
+# Calculate keyword scor
 def calculate_score(
     question: str,
     keywords: list[str]
@@ -79,10 +75,6 @@ def calculate_score(
             # Number of words in the phrase
             word_count = len(keyword.split())
 
-            # Example:
-            # "mobile app" -> 4 points
-            # "school erp" -> 4 points
-            # "artificial intelligence" -> 4 points
             score += 2 + word_count
 
         else:
@@ -92,10 +84,6 @@ def calculate_score(
 
     return score, matched_keywords
 
-
-# ---------------------------------------------------------
-# Find best intent
-# ---------------------------------------------------------
 
 def find_intent(question: str):
     """
@@ -117,9 +105,7 @@ def find_intent(question: str):
 
     intent_scores = []
 
-    # -----------------------------------------------------
     # Calculate score for every intent
-    # -----------------------------------------------------
 
     for intent, data in KNOWLEDGE_BASE.items():
 
@@ -136,10 +122,8 @@ def find_intent(question: str):
                 "matched_keywords": matched_keywords
             })
 
-    # -----------------------------------------------------
+    
     # Nothing matched
-    # -----------------------------------------------------
-
     if not intent_scores:
 
         return {
@@ -149,10 +133,8 @@ def find_intent(question: str):
             "answer": None
         }
 
-    # -----------------------------------------------------
+    
     # Sort intents by score
-    # -----------------------------------------------------
-
     intent_scores.sort(
         key=lambda x: x["score"],
         reverse=True
@@ -169,30 +151,13 @@ def find_intent(question: str):
 
     best_score = best["score"]
 
-    # -----------------------------------------------------
     # Confidence calculation
-    # -----------------------------------------------------
-
-    # Base confidence based on score.
-    #
-    # 1 point  -> low
-    # 2 points -> moderate
-    # 3+       -> stronger
-    #
-    # We cap it at 1.0.
-
     confidence = min(
         best_score / 4,
         1.0
     )
 
-    # -----------------------------------------------------
     # Ambiguous match protection
-    # -----------------------------------------------------
-
-    # If the best and second-best intents have very similar
-    # scores, we don't want to confidently choose one.
-
     if second_score > 0:
 
         score_difference = best_score - second_score
@@ -206,10 +171,7 @@ def find_intent(question: str):
             confidence *= 0.75
 
     confidence = round(confidence, 2)
-
-    # -----------------------------------------------------
     # Return result
-    # -----------------------------------------------------
 
     return {
         "intent": best["intent"],
@@ -222,107 +184,3 @@ def find_intent(question: str):
 
 
 
-
-# import re
-# from knowledge_base import KNOWLEDGE_BASE
-
-
-# def preprocess_text(text: str) -> str:
-#     """
-#     Normalize user input before matching.
-#     """
-#     text = text.lower()
-#     text = re.sub(r"[^a-z0-9\s.-]", " ", text)
-#     text = re.sub(r"\s+", " ", text).strip()
-
-#     return text
-
-
-# def keyword_matches(question: str, keywords: list[str]) -> list[str]:
-#     """
-#     Find which keywords from an intent appear in the user's question.
-#     """
-#     question = preprocess_text(question)
-
-#     matched = []
-
-#     for keyword in keywords:
-#         keyword = preprocess_text(keyword)
-
-#         # Phrase matching
-#         if keyword in question:
-#             matched.append(keyword)
-
-#     return matched
-
-
-# def calculate_score(question: str, keywords: list[str]) -> int:
-#     """
-#     Calculate how strongly an intent matches the user's question.
-#     """
-#     matched_keywords = keyword_matches(question, keywords)
-
-#     score = 0
-
-#     for keyword in matched_keywords:
-
-#         # Give more weight to multi-word phrases
-#         if " " in keyword:
-#             score += 3
-#         else:
-#             score += 1
-
-#     return score
-
-
-# def find_intent(question: str):
-#     """
-#     Find the best matching intent from the knowledge base.
-#     """
-
-#     question = preprocess_text(question)
-
-#     best_intent = None
-#     best_score = 0
-#     best_matches = []
-
-#     for intent, data in KNOWLEDGE_BASE.items():
-
-#         score = calculate_score(
-#             question,
-#             data["keywords"]
-#         )
-
-#         if score > best_score:
-#             best_score = score
-#             best_intent = intent
-#             best_matches = keyword_matches(
-#                 question,
-#                 data["keywords"]
-#             )
-
-#     # Nothing matched
-#     if best_intent is None:
-#         return {
-#             "intent": None,
-#             "confidence": 0.0,
-#             "matched_keywords": [],
-#             "answer": None
-#         }
-
-#     # Simple confidence calculation
-#     total_keywords = len(
-#         KNOWLEDGE_BASE[best_intent]["keywords"]
-#     )
-
-#     confidence = min(
-#         best_score / max(total_keywords, 1),
-#         1.0
-#     )
-
-#     return {
-#         "intent": best_intent,
-#         "confidence": round(confidence, 2),
-#         "matched_keywords": best_matches,
-#         "answer": KNOWLEDGE_BASE[best_intent]["answer"]
-#     }
