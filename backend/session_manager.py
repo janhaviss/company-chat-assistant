@@ -13,7 +13,7 @@ class SessionState(str, Enum):
 
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-PHONE_RE = re.compile(r"^[\d\s\-\+\(\)]{7,15}$")
+PHONE_RE = re.compile(r"^[6-9]\d{9}$")
 
 JOB_APPLICATION_KEYWORDS = [
     "resume", "cv", "job application", "apply for a job", "apply for this job",
