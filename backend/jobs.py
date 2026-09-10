@@ -1,12 +1,7 @@
 from typing import Optional
 
 # Current job openings
-# Edit this list as roles open and close — set "open": False (or just
-# remove the entry) for a role once it's filled.
-#
-# "keywords" are optional extra phrases that count as selecting this
-# role when the user types freely instead of tapping an option.
-
+# Edit this list as roles open and close set "open": False (or just remove the entry) for a role once it's filled.
 JOB_OPENINGS = [
     {
         "id": "backend-developer",

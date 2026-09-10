@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import uuid
 from typing import Dict, List, Optional
 
@@ -12,16 +13,20 @@ from pydantic import BaseModel, EmailStr
 
 from knowledge_base import KNOWLEDGE_BASE
 from matchers import find_intent
-from ai_service import ask_ai
+from ai_service import ask_ai, classify_intent_with_ai
 
 from session_manager import (
     get_session, is_valid_email, is_valid_phone,
-    looks_like_job_application, SessionState,
+    get_career_intent, is_greeting, is_farewell, SessionState,
 )
-from db import init_db, save_lead, save_application, get_lead_by_session
+from db import init_db, save_lead, save_application, get_lead_by_session, save_unanswered_question
 from email_service import send_new_application_email, send_new_lead_email, send_unanswered_question_email
 from jobs import get_open_jobs, format_job_listing, match_job_selection
 
+
+# 
+# FastAPI Application
+# 
 
 app = FastAPI(
     title="Company AI Assistant",
@@ -33,6 +38,8 @@ app = FastAPI(
 )
 
 
+
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -62,7 +69,6 @@ def on_startup():
     init_db()
 
 
-# Request / Response Models
 class ChatRequest(BaseModel):
     question: str
 
@@ -85,6 +91,7 @@ class MenuOption(BaseModel):
 class ContactRequest(BaseModel):
     email: EmailStr
     question: str
+
 
 @app.get("/")
 def root():
@@ -163,20 +170,22 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     active_connections[session_id] = websocket
     session = get_session(session_id)
 
-    if session["state"] == SessionState.AWAITING_NAME:
-        await websocket.send_json({
-            "sender": "bot",
-            "text": "Hi! Before we get started, what's your name?",
-            "stage": session["state"],
-        })
-
     try:
+        if session["state"] == SessionState.AWAITING_NAME:
+            await websocket.send_json({
+                "sender": "bot",
+                "text": "Hi! Before we get started, what's your name?",
+                "stage": session["state"],
+            })
+
         while True:
             data = await websocket.receive_json()
             user_text = (data.get("text") or "").strip()
             reply = await handle_message(session_id, session, user_text)
             await websocket.send_json(reply)
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
         active_connections.pop(session_id, None)
 
 
@@ -199,6 +208,7 @@ async def _resolve_reply(session_id: str, session: dict, user_text: str) -> dict
     if not user_text:
         return {"sender": "bot", "text": "Please type something."}
 
+    # ---- Mandatory lead capture, before anything else ----
     if state == SessionState.AWAITING_NAME:
         session["name"] = user_text
         session["state"] = SessionState.AWAITING_EMAIL
@@ -218,6 +228,7 @@ async def _resolve_reply(session_id: str, session: dict, user_text: str) -> dict
         lead_id = save_lead(session_id, session["name"], session["email"], session["phone"])
         session["lead_id"] = lead_id
         session["state"] = SessionState.READY
+
         asyncio.create_task(
             asyncio.to_thread(
                 send_new_lead_email, session["name"], session["email"], session["phone"]
@@ -226,6 +237,14 @@ async def _resolve_reply(session_id: str, session: dict, user_text: str) -> dict
 
         return {"sender": "bot", "text": f"Thanks {session['name']}! How can I help you today?"}
 
+    # ---- Greetings and farewells: instant, deterministic, no AI call ----
+    if is_greeting(user_text):
+        return {"sender": "bot", "text": f"Hello{', ' + session['name'] if session.get('name') else ''}! How can I help you today?"}
+
+    if is_farewell(user_text):
+        return {"sender": "bot", "text": "Thanks for stopping by! Have a great day."}
+
+    # ---- Mandatory resume gate: nothing else proceeds until it's uploaded ----
     if state == SessionState.AWAITING_RESUME:
         return {
             "sender": "bot",
@@ -237,6 +256,7 @@ async def _resolve_reply(session_id: str, session: dict, user_text: str) -> dict
             "needs_resume": True,
         }
 
+    # ---- Job-role selection: user was just shown the openings list ----
     if state == SessionState.AWAITING_JOB_SELECTION:
         open_jobs = get_open_jobs()
         job = match_job_selection(user_text, open_jobs)
@@ -260,21 +280,12 @@ async def _resolve_reply(session_id: str, session: dict, user_text: str) -> dict
             "needs_resume": True,
         }
 
-    # ---- Run the existing matcher once ----
-    result = find_intent(user_text)
-    intent = result.get("intent")
-    confidence = result.get("confidence", 0.0)
-    answer = result.get("answer")
-    intent_is_job_related = intent is not None and any(
-        term in intent.lower() for term in ("job", "career", "apply", "resume", "cv")
-    )
+    career_intent = get_career_intent(user_text)
 
-    if intent_is_job_related or looks_like_job_application(user_text):
+    if career_intent is not None:
         open_jobs = get_open_jobs()
 
         if not open_jobs:
-            # No openings right now — never ask for a resume with nothing
-            # to apply to. Stays in normal Q&A.
             return {
                 "sender": "bot",
                 "text": (
@@ -283,6 +294,17 @@ async def _resolve_reply(session_id: str, session: dict, user_text: str) -> dict
                     "in the meantime!"
                 ),
             }
+
+        if career_intent == "APPLICATION":
+            named_job = match_job_selection(user_text, open_jobs)
+            if named_job is not None:
+                session["selected_job"] = named_job
+                session["state"] = SessionState.AWAITING_RESUME
+                return {
+                    "sender": "bot",
+                    "text": f"Great choice! Please attach your resume (PDF or Word doc) to apply for {named_job['title']}.",
+                    "needs_resume": True,
+                }
 
         session["state"] = SessionState.AWAITING_JOB_SELECTION
         return {
@@ -294,13 +316,31 @@ async def _resolve_reply(session_id: str, session: dict, user_text: str) -> dict
             "job_options": [j["title"] for j in open_jobs],
         }
 
+    # ---- Run the existing matcher once ----
+    result = find_intent(user_text)
+    intent = result.get("intent")
+    confidence = result.get("confidence", 0.0)
+    answer = result.get("answer")
+
+    # ---- Existing KB / keyword / AI fallback logic, untouched ----
     if intent is not None and confidence >= KB_CONFIDENCE_THRESHOLD and answer:
         return {"sender": "bot", "text": answer}
+    classified_intent = await asyncio.to_thread(
+        classify_intent_with_ai, user_text, KNOWLEDGE_BASE
+    )
+    if classified_intent is not None:
+        return {"sender": "bot", "text": KNOWLEDGE_BASE[classified_intent]["answer"]}
+
     ai_answer = await asyncio.to_thread(ask_ai, user_text)
+    looks_like_a_signal = bool(re.fullmatch(r"[A-Z][A-Z_]*", ai_answer.strip()))
+    if looks_like_a_signal and ai_answer not in ("CONTACT_TEAM", "NOT_RELEVANT"):
+        print(f"[main] Unexpected AI signal token: {ai_answer!r} — treating as CONTACT_TEAM")
+        ai_answer = "CONTACT_TEAM"
 
     if ai_answer == "CONTACT_TEAM":
         lead = get_lead_by_session(session_id)
         if lead is not None:
+            save_unanswered_question(lead["id"], user_text)
             asyncio.create_task(
                 asyncio.to_thread(
                     send_unanswered_question_email,
@@ -318,16 +358,11 @@ async def _resolve_reply(session_id: str, session: dict, user_text: str) -> dict
     if ai_answer == "NOT_RELEVANT":
         return {
             "sender": "bot",
-            "text": (
-                "I'm not quite sure what you mean — could you tell me more, "
-                "or ask about our services, products, or careers?"
-            ),
+            "text": "Please ask me company related questions.",
         }
 
     return {"sender": "bot", "text": ai_answer}
 
-
-# Resume upload
 @app.post("/api/upload-resume")
 async def upload_resume(session_id: str = Form(...), file: UploadFile = File(...)):
     session = get_session(session_id)
@@ -358,14 +393,16 @@ async def upload_resume(session_id: str = Form(...), file: UploadFile = File(...
     job_title = (session.get("selected_job") or {}).get("title", "General Application")
 
     save_application(lead["id"], file_path, file.filename, job_title)
-
-    send_new_application_email(
-        name=lead["name"],
-        email=lead["email"],
-        phone=lead["phone"],
-        resume_path=file_path,
-        original_filename=file.filename,
-        job_title=job_title,
+    asyncio.create_task(
+        asyncio.to_thread(
+            send_new_application_email,
+            name=lead["name"],
+            email=lead["email"],
+            phone=lead["phone"],
+            resume_path=file_path,
+            original_filename=file.filename,
+            job_title=job_title,
+        )
     )
 
     session["state"] = SessionState.READY
@@ -379,6 +416,9 @@ async def upload_resume(session_id: str = Form(...), file: UploadFile = File(...
 
     ws = active_connections.get(session_id)
     if ws is not None:
-        await ws.send_json(confirmation)
+        try:
+            await ws.send_json(confirmation)
+        except (WebSocketDisconnect, RuntimeError):
+            active_connections.pop(session_id, None)
 
     return {"message": "Resume received.", "confirmation": confirmation}

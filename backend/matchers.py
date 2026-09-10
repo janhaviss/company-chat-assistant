@@ -22,8 +22,6 @@ def preprocess_text(text: str) -> str:
 
 
 # Keyword matching
-
-
 def keyword_matches(question: str, keywords: list[str]) -> list[str]:
     """
     Find keywords/phrases that appear in the user's question.

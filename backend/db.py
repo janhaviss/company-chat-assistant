@@ -38,7 +38,20 @@ def init_db():
                 FOREIGN KEY (lead_id) REFERENCES leads (id)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS unanswered_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                lead_id INTEGER NOT NULL,
+                question TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (lead_id) REFERENCES leads (id)
+            )
+        """)
         conn.commit()
+
+        # Migration: job_title was added after the table already existed
+        # for some people (chatbot.db created before this change). This
+        # adds the column without requiring anyone to delete their DB.
         existing_columns = {
             row["name"] for row in conn.execute("PRAGMA table_info(applications)")
         }
@@ -85,3 +98,22 @@ def get_lead_by_session(session_id: str) -> Optional[sqlite3.Row]:
         return conn.execute(
             "SELECT * FROM leads WHERE session_id = ?", (session_id,)
         ).fetchone()
+
+
+def save_unanswered_question(lead_id: int, question: str) -> int:
+    """
+    Logs a question the KB and AI fallback both couldn't confidently
+    answer (CONTACT_TEAM). Review these periodically — recurring ones
+    are good candidates for new KB intents or added keywords/questions
+    on an existing one.
+    """
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO unanswered_questions (lead_id, question, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (lead_id, question, datetime.utcnow().isoformat()),
+        )
+        conn.commit()
+        return cur.lastrowid
